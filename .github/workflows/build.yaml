@@ -1,11 +1,7 @@
-name: OpenWrt Build
+name: OpenWrt Build (IRQ Fix)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "0 */2 * * *"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,17 +14,17 @@ env:
   # Repository Configuration
   REMOTE_REPOSITORY: qosmio/openwrt-ipq
   REMOTE_BRANCH: main-nss
-  NSS_PACKAGES_REPOSITORY: qosmio/nss-packages
-  NSS_PACKAGES_REPOSITORY_BRANCH: NSS-12.5-K6.x
+  NSS_PACKAGES_REPOSITORY: mo-radwan1/nss-packages
+  NSS_PACKAGES_REPOSITORY_BRANCH: fix/nss-drv-unbalanced-enable-irq-napi-busy-poll
 
   # Build Configuration
   CONFIG_FILE: ax3600.config
   CUSTOM_FILES_PATH: files
 
   # Release Configuration
-  RELEASE_PREFIX: main-nss
-  ARTIFACT_RETENTION_DAYS: 7
-  RELEASES_TO_KEEP: 2
+  RELEASE_PREFIX: main-nss-irqfix
+  ARTIFACT_RETENTION_DAYS: 30
+  RELEASES_TO_KEEP: 3
 
 jobs:
   check_updates:
@@ -53,24 +49,13 @@ jobs:
           main_sha=$(gh api "repos/${REMOTE_REPOSITORY}/commits/${REMOTE_BRANCH}" --jq .sha)
           nss_sha=$(gh api "repos/${NSS_PACKAGES_REPOSITORY}/commits/${NSS_PACKAGES_REPOSITORY_BRANCH}" --jq .sha)
 
-          # Get latest release body safely
-          latest_release_body=$(gh release view --repo "${GITHUB_REPOSITORY}" --json body --jq .body 2>/dev/null || echo "")
-
-          # Determine if build is required
-          build_required=true
-          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]] && \
-             [[ "$latest_release_body" == *"$main_sha"* ]] && \
-             [[ "$latest_release_body" == *"$nss_sha"* ]]; then
-            build_required=false
-          fi
-
-          echo "Build required: $build_required"
+          echo "Build required: true (manual dispatch)"
           echo "Main SHA: $main_sha"
           echo "NSS SHA: $nss_sha"
 
           # Output results
           cat >> "$GITHUB_OUTPUT" <<EOF
-          build_required=$build_required
+          build_required=true
           main_sha=$main_sha
           nss_sha=$nss_sha
           EOF
@@ -78,7 +63,6 @@ jobs:
   build_firmware:
     name: Build Firmware
     needs: check_updates
-    if: needs.check_updates.outputs.build_required == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -131,6 +115,12 @@ jobs:
           if [ ! -f feeds.conf ]; then
             cp feeds.conf.default feeds.conf
           fi
+
+          # Point nss-packages feed to our patched fork with IRQ fix
+          sed -i 's|https://github.com/qosmio/nss-packages.git;NSS-12.5-K6.x|https://github.com/mo-radwan1/nss-packages.git;fix/nss-drv-unbalanced-enable-irq-napi-busy-poll|' feeds.conf
+          echo "=== feeds.conf (nss-packages line) ==="
+          grep nss-packages feeds.conf
+
           echo "src-git qosmio https://github.com/qosmio/packages-extra" >> feeds.conf
           echo "src-git sqm_nss https://github.com/JuliusBairaktaris/sqm-scripts-nss" >> feeds.conf
 
@@ -207,16 +197,17 @@ jobs:
 
           # Create release notes
           cat > release_notes.md <<EOF
-          ## OpenWrt Automated Build
+          ## OpenWrt Build (IRQ Fix)
           - **Date**: $date
           - **Main Commit**: \`${{ needs.check_updates.outputs.main_sha }}\`
           - **NSS Commit**: \`${{ needs.check_updates.outputs.nss_sha }}\`
-          - **Trigger**: \`${{ github.event_name }}\`
+          - **Fix**: qca-nss-drv unbalanced enable_irq during NAPI busy poll
+          - **PR**: https://github.com/qosmio/nss-packages/pull/72
           EOF
 
           gh release create "$tag_name" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "OpenWrt Build $date" \
+            --title "OpenWrt Build $date (IRQ Fix)" \
             --notes-file release_notes.md \
             --draft=false \
             $(find openwrt/bin/targets/qualcommax/ipq807x/ -type f -not -path "*/packages/*")
@@ -230,6 +221,6 @@ jobs:
           CURRENT: ${{ steps.release.outputs.release_tag }}
         run: |
           gh release list --limit 100 --exclude-drafts --json tagName,publishedAt --order desc | \
-          jq -r --argjson keep "${KEEP:-2}" --arg current "$CURRENT" \
+          jq -r --argjson keep "${KEEP:-3}" --arg current "$CURRENT" \
             'sort_by(.publishedAt) | reverse | .[$keep:] | .[].tagName | select(. != $current)' | \
           while read -r tag; do gh release delete "$tag" --yes --cleanup-tag; done
