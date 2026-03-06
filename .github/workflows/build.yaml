@@ -117,9 +117,16 @@ jobs:
           fi
 
           # Point nss-packages feed to our patched fork with IRQ fix
-          sed -i 's|https://github.com/qosmio/nss-packages.git;NSS-12.5-K6.x|https://github.com/mo-radwan1/nss-packages.git;fix/nss-drv-unbalanced-enable-irq-napi-busy-poll|' feeds.conf
+          if grep -q 'qosmio/nss-packages' feeds.conf; then
+            sed -i 's|https://github.com/qosmio/nss-packages.git;[^"]*|https://github.com/mo-radwan1/nss-packages.git;fix/nss-drv-unbalanced-enable-irq-napi-busy-poll|' feeds.conf
+          else
+            echo "ERROR: Could not find qosmio/nss-packages in feeds.conf"
+            cat feeds.conf
+            exit 1
+          fi
           echo "=== feeds.conf (nss-packages line) ==="
           grep nss-packages feeds.conf
+          grep -q 'mo-radwan1/nss-packages' feeds.conf || { echo "ERROR: Feed replacement failed"; exit 1; }
 
           echo "src-git qosmio https://github.com/qosmio/packages-extra" >> feeds.conf
           echo "src-git sqm_nss https://github.com/JuliusBairaktaris/sqm-scripts-nss" >> feeds.conf
